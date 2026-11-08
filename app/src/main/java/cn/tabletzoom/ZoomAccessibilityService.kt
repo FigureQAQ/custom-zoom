@@ -29,6 +29,7 @@ class ZoomAccessibilityService : AccessibilityService() {
         private const val KEY_DEFAULT_SCALE = "default_scale"
         private const val KEY_SCALE_ACTIVE = "scale_active"
         private const val KEY_ACTIVE_SCALE_KEY = "active_scale_key"
+        private const val KEY_TARGET_PACKAGE = "target_package"
         private const val MIN_SCALE = 1f
         private const val MAX_SCALE = 5f
         private const val FALLBACK_DEFAULT_SCALE = 1.17f
@@ -48,6 +49,7 @@ class ZoomAccessibilityService : AccessibilityService() {
                 .edit()
                 .putFloat(KEY_SCALE, safeScale)
                 .putFloat(scaleKey, safeScale)
+                .putString(KEY_TARGET_PACKAGE, packageName)
                 .putBoolean(KEY_SCALE_ACTIVE, true)
                 .apply()
             val service = instance ?: return false
@@ -112,6 +114,13 @@ class ZoomAccessibilityService : AccessibilityService() {
     private val overlayHandler = Handler(Looper.getMainLooper())
     private var overlayHideTask: Runnable? = null
     private var overlayActive = false
+    private var targetPackageSeen = false
+    private val homePackage by lazy {
+        packageManager.resolveActivity(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+            0
+        )?.activityInfo?.packageName
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -123,13 +132,30 @@ class ZoomAccessibilityService : AccessibilityService() {
         val scaleKey = prefs.getString(KEY_ACTIVE_SCALE_KEY, KEY_SCALE) ?: KEY_SCALE
         val saved = prefs.getFloat(scaleKey, prefs.getFloat(KEY_SCALE, FALLBACK_DEFAULT_SCALE))
         val active = prefs.getBoolean(KEY_SCALE_ACTIVE, false)
+        targetPackageSeen = active
         // Explicitly reset as well as restore. Android can retain a previous
         // system magnification state after a service has been restarted.
         applyScale(if (active) saved else MIN_SCALE)
         updateOverlay(saved, active)
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val packageName = event.packageName?.toString() ?: return
+        val target = getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getString(KEY_TARGET_PACKAGE, null)
+        if (target != null && packageName == target) {
+            targetPackageSeen = true
+            return
+        }
+        if (
+            overlayActive && targetPackageSeen &&
+            (packageName == this.packageName || packageName == homePackage)
+        ) {
+            targetPackageSeen = false
+            resetScale()
+        }
+    }
 
     override fun onInterrupt() = Unit
 
@@ -165,7 +191,21 @@ class ZoomAccessibilityService : AccessibilityService() {
     }
 
     private fun resetScale() {
-        magnification?.reset(false)
+        val controller = magnification
+        if (controller != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val inactive = MagnificationConfig.Builder()
+                    .setMode(MagnificationConfig.MAGNIFICATION_MODE_FULLSCREEN)
+                    .setActivated(false)
+                    .setScale(MIN_SCALE)
+                    .build()
+                controller.setMagnificationConfig(inactive, false)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                controller.resetCurrentMagnification(false)
+            }
+            controller.reset(false)
+        }
         getSharedPreferences(PREFS, MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_SCALE_ACTIVE, false)
