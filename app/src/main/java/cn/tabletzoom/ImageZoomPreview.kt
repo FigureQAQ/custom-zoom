@@ -10,6 +10,7 @@ import android.graphics.drawable.GradientDrawable
 import android.media.ExifInterface
 import android.net.Uri
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
@@ -25,13 +26,20 @@ object ImageZoomPreview {
     private const val MAX_SCALE = 5f
     private const val SCALE_STEP = 0.05f
     private const val MAX_DECODE_EDGE = 1920
+    private const val PAN_STEP_PX = 1f
+
+    data class Selection(val scale: Float, val panXFraction: Float, val panYFraction: Float)
 
     fun show(
         activity: Activity,
         uri: Uri,
         screenRatio: Double,
         initialScale: Float,
-        onApply: (Float) -> Unit
+        initialPanXFraction: Float,
+        initialPanYFraction: Float,
+        defaultPanXFraction: Float,
+        defaultPanYFraction: Float,
+        onApply: (Selection) -> Unit
     ) {
         if (activity.isFinishing || activity.isDestroyed) return
 
@@ -62,6 +70,8 @@ object ImageZoomPreview {
 
         val dialog = Dialog(activity)
         var scale = initialScale.coerceIn(MIN_SCALE, MAX_SCALE)
+        var panX = initialPanXFraction * imageWidthPx
+        var panY = initialPanYFraction * imageHeightPx
         val root = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -105,10 +115,9 @@ object ImageZoomPreview {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        root.addView(previewFrame, LinearLayout.LayoutParams(imageWidthDp.toInt(), imageHeightDp.toInt()))
+        root.addView(previewFrame, LinearLayout.LayoutParams(imageWidthPx, imageHeightPx))
 
         fun updatePreview() {
-            scaleLabel.text = "当前倍率  %.2f×  ·  预览边缘裁切效果".format(java.util.Locale.US, scale)
             image.post {
                 if (image.width <= 0 || image.height <= 0) return@post
                 val cover = max(
@@ -116,16 +125,80 @@ object ImageZoomPreview {
                     image.height.toFloat() / bitmap.height
                 )
                 val effectiveScale = cover * scale
+                val renderedWidth = bitmap.width * effectiveScale
+                val renderedHeight = bitmap.height * effectiveScale
+                val maxPanX = max(0f, (renderedWidth - image.width) / 2f)
+                val maxPanY = max(0f, (renderedHeight - image.height) / 2f)
+                panX = panX.coerceIn(-maxPanX, maxPanX)
+                panY = panY.coerceIn(-maxPanY, maxPanY)
+                val x = panX / image.width * 100f
+                val y = panY / image.height * 100f
+                scaleLabel.text = "%.2f×  ·  X %+.2f%%  Y %+.2f%%".format(java.util.Locale.US, scale, x, y)
                 val matrix = Matrix().apply {
                     setScale(effectiveScale, effectiveScale)
                     postTranslate(
-                        (image.width - bitmap.width * effectiveScale) / 2f,
-                        (image.height - bitmap.height * effectiveScale) / 2f
+                        (image.width - renderedWidth) / 2f + panX,
+                        (image.height - renderedHeight) / 2f + panY
                     )
                 }
                 image.imageMatrix = matrix
             }
         }
+
+        var lastTouchX = 0f
+        var lastTouchY = 0f
+        image.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    panX += event.x - lastTouchX
+                    panY += event.y - lastTouchY
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    updatePreview()
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+
+        val panControls = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, dp(activity, 2), 0, dp(activity, 2))
+        }
+        fun moveButton(label: String, dx: Float, dy: Float, description: String) = Button(activity).apply {
+            text = label
+            contentDescription = description
+            setOnClickListener {
+                panX += dx
+                panY += dy
+                updatePreview()
+            }
+        }
+        val panButtonSize = dp(activity, 48)
+        panControls.addView(moveButton("←", -PAN_STEP_PX, 0f, "照片向左微调 1 像素"), LinearLayout.LayoutParams(panButtonSize, panButtonSize))
+        panControls.addView(moveButton("↑", 0f, -PAN_STEP_PX, "照片向上微调 1 像素"), LinearLayout.LayoutParams(panButtonSize, panButtonSize))
+        panControls.addView(Button(activity).apply {
+            text = "默认位置"
+            contentDescription = "恢复示例图校准位置"
+            setOnClickListener {
+                panX = defaultPanXFraction * image.width
+                panY = defaultPanYFraction * image.height
+                updatePreview()
+            }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, panButtonSize))
+        panControls.addView(moveButton("↓", 0f, PAN_STEP_PX, "照片向下微调 1 像素"), LinearLayout.LayoutParams(panButtonSize, panButtonSize))
+        panControls.addView(moveButton("→", PAN_STEP_PX, 0f, "照片向右微调 1 像素"), LinearLayout.LayoutParams(panButtonSize, panButtonSize))
+        root.addView(panControls, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
 
         val controls = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -158,7 +231,11 @@ object ImageZoomPreview {
         actions.addView(Button(activity).apply {
             text = "使用此倍率"
             setOnClickListener {
-                onApply(scale)
+                onApply(Selection(
+                    scale,
+                    panX / image.width.coerceAtLeast(1),
+                    panY / image.height.coerceAtLeast(1)
+                ))
                 dialog.dismiss()
             }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))

@@ -6,13 +6,32 @@ import org.junit.Test
 
 class AspectRatioZoomTest {
     @Test
+    fun panCenterMapsPreviewOffsetToDisplayCenter() {
+        val center = MagnificationPan.center(1000f, 2000f, 2f, 0f, -0.1f)
+        assertEquals(500f, center.x, 0.001f)
+        assertEquals(1100f, center.y, 0.001f)
+    }
+
+    @Test
+    fun panCenterClampsToDisplayBounds() {
+        val center = MagnificationPan.center(1000f, 2000f, 1.17f, 0f, -1f)
+        assertEquals(2000f, center.y, 0.001f)
+    }
+
+    @Test
     fun threeByTwoScreenFillsFourByThreeVideo() {
         assertEquals(1.125, AspectRatioZoom.coverScale(3.0 / 2.0, 4.0 / 3.0), 0.000001)
     }
 
     @Test
-    fun requestedThreeByTwoDefaultIsOnePointOneSeven() {
-        assertEquals(1.17, AspectRatioZoom.defaultScale(3.0 / 2.0, 4.0 / 3.0), 0.000001)
+    fun threeByTwoAndFourByThreeUseSampleCalibratedCrop() {
+        assertEquals(1.243, AspectRatioZoom.defaultScale(3.0 / 2.0, 4.0 / 3.0), 0.000001)
+        assertEquals(-0.0167, AspectRatioZoom.defaultPanY(3.0 / 2.0, 4.0 / 3.0), 0.000001)
+    }
+
+    @Test
+    fun otherRatiosKeepCenteredPan() {
+        assertEquals(0.0, AspectRatioZoom.defaultPanY(1.5, 16.0 / 9.0), 0.000001)
     }
 
     @Test

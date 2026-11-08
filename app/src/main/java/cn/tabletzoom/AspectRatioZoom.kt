@@ -3,7 +3,8 @@ package cn.tabletzoom
 object AspectRatioZoom {
     private const val TABLET_RATIO = 3.0 / 2.0
     private const val VIDEO_RATIO = 4.0 / 3.0
-    private const val TABLET_DEFAULT_ZOOM = 1.17
+    private const val TABLET_DEFAULT_ZOOM = 1.243
+    private const val TABLET_DEFAULT_PAN_Y = -0.0167
     private val fraction = Regex("^(\\d+(?:\\.\\d+)?)\\s*[:/比]\\s*(\\d+(?:\\.\\d+)?)$")
 
     fun parse(value: String): Double? {
@@ -34,4 +35,9 @@ object AspectRatioZoom {
             kotlin.math.abs(targetRatio - VIDEO_RATIO) < 0.000001
         ) TABLET_DEFAULT_ZOOM else coverScale(screenRatio, targetRatio)
     }
+
+    fun defaultPanY(screenRatio: Double, targetRatio: Double): Double = if (
+        kotlin.math.abs(screenRatio - TABLET_RATIO) < 0.000001 &&
+        kotlin.math.abs(targetRatio - VIDEO_RATIO) < 0.000001
+    ) TABLET_DEFAULT_PAN_Y else 0.0
 }
