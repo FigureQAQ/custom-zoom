@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">自定义缩放</string>
+    <string name="accessibility_service_description">使用系统无障碍放大当前屏幕内容，不录制或投放屏幕。</string>
+</resources>
