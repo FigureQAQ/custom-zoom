@@ -8,6 +8,8 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -24,8 +26,13 @@ class ZoomAccessibilityService : AccessibilityService() {
     companion object {
         private const val PREFS = "zoom_settings"
         private const val KEY_SCALE = "scale"
+        private const val KEY_DEFAULT_SCALE = "default_scale"
+        private const val KEY_SCALE_ACTIVE = "scale_active"
+        private const val KEY_ACTIVE_SCALE_KEY = "active_scale_key"
         private const val MIN_SCALE = 1f
         private const val MAX_SCALE = 5f
+        private const val FALLBACK_DEFAULT_SCALE = 1.17f
+        private const val OVERLAY_HIDE_DELAY_MS = 3000L
 
         @Volatile
         private var instance: ZoomAccessibilityService? = null
@@ -35,11 +42,16 @@ class ZoomAccessibilityService : AccessibilityService() {
             // system magnifier operates on the current display, so it does not
             // need to inspect or filter the target app's frames.
             val safeScale = scale.coerceIn(MIN_SCALE, MAX_SCALE)
-            context.getSharedPreferences(PREFS, MODE_PRIVATE)
+            val prefs = context.getSharedPreferences(PREFS, MODE_PRIVATE)
+            val scaleKey = prefs.getString(KEY_ACTIVE_SCALE_KEY, KEY_SCALE) ?: KEY_SCALE
+            prefs
                 .edit()
                 .putFloat(KEY_SCALE, safeScale)
+                .putFloat(scaleKey, safeScale)
+                .putBoolean(KEY_SCALE_ACTIVE, true)
                 .apply()
             val service = instance ?: return false
+            service.showOverlay()
             val applied = service.applyScale(safeScale)
             if (applied) service.updateOverlay(safeScale, safeScale > MIN_SCALE)
             return applied
@@ -51,14 +63,41 @@ class ZoomAccessibilityService : AccessibilityService() {
 
         fun adjustZoom(delta: Float) {
             val service = instance ?: return
-            val current = service.getSharedPreferences(PREFS, MODE_PRIVATE)
-                .getFloat(KEY_SCALE, MIN_SCALE)
+            val prefs = service.getSharedPreferences(PREFS, MODE_PRIVATE)
+            val scaleKey = prefs.getString(KEY_ACTIVE_SCALE_KEY, KEY_SCALE) ?: KEY_SCALE
+            val current = prefs.getFloat(scaleKey, prefs.getFloat(KEY_SCALE, MIN_SCALE))
             val next = (current + delta).coerceIn(MIN_SCALE, MAX_SCALE)
             if (service.applyScale(next)) service.updateOverlay(next, next > MIN_SCALE)
-            service.getSharedPreferences(PREFS, MODE_PRIVATE)
-                .edit()
+            prefs.edit()
                 .putFloat(KEY_SCALE, next)
+                .putFloat(scaleKey, next)
+                .putBoolean(KEY_SCALE_ACTIVE, true)
                 .apply()
+        }
+
+        fun restoreDefaultZoom() {
+            val service = instance ?: return
+            val prefs = service.getSharedPreferences(PREFS, MODE_PRIVATE)
+            val defaultScale = prefs.getFloat(KEY_DEFAULT_SCALE, FALLBACK_DEFAULT_SCALE)
+                .coerceIn(MIN_SCALE, MAX_SCALE)
+            if (service.applyScale(defaultScale)) {
+                val scaleKey = prefs.getString(KEY_ACTIVE_SCALE_KEY, KEY_SCALE) ?: KEY_SCALE
+                prefs.edit()
+                    .putFloat(KEY_SCALE, defaultScale)
+                    .putFloat(scaleKey, defaultScale)
+                    .putBoolean(KEY_SCALE_ACTIVE, true)
+                    .apply()
+                service.updateOverlay(defaultScale, true)
+            }
+        }
+
+        fun showOverlayControls() {
+            val service = instance ?: return
+            service.showOverlay()
+            val prefs = service.getSharedPreferences(PREFS, MODE_PRIVATE)
+            val scaleKey = prefs.getString(KEY_ACTIVE_SCALE_KEY, KEY_SCALE) ?: KEY_SCALE
+            val scale = prefs.getFloat(scaleKey, prefs.getFloat(KEY_SCALE, FALLBACK_DEFAULT_SCALE))
+            service.updateOverlay(scale, prefs.getBoolean(KEY_SCALE_ACTIVE, false))
         }
     }
 
@@ -68,7 +107,11 @@ class ZoomAccessibilityService : AccessibilityService() {
     private var overlayLabel: TextView? = null
     private var overlayMinus: TextView? = null
     private var overlayPlus: TextView? = null
+    private var overlayDefault: TextView? = null
     private var overlayStop: TextView? = null
+    private val overlayHandler = Handler(Looper.getMainLooper())
+    private var overlayHideTask: Runnable? = null
+    private var overlayActive = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -76,12 +119,14 @@ class ZoomAccessibilityService : AccessibilityService() {
         magnification = getMagnificationController()
         windowManager = getSystemService(WindowManager::class.java)
         showOverlay()
-        val saved = getSharedPreferences(PREFS, MODE_PRIVATE)
-            .getFloat(KEY_SCALE, MIN_SCALE)
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val scaleKey = prefs.getString(KEY_ACTIVE_SCALE_KEY, KEY_SCALE) ?: KEY_SCALE
+        val saved = prefs.getFloat(scaleKey, prefs.getFloat(KEY_SCALE, FALLBACK_DEFAULT_SCALE))
+        val active = prefs.getBoolean(KEY_SCALE_ACTIVE, false)
         // Explicitly reset as well as restore. Android can retain a previous
         // system magnification state after a service has been restarted.
-        applyScale(saved)
-        updateOverlay(saved, saved > MIN_SCALE)
+        applyScale(if (active) saved else MIN_SCALE)
+        updateOverlay(saved, active)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
@@ -123,7 +168,7 @@ class ZoomAccessibilityService : AccessibilityService() {
         magnification?.reset(false)
         getSharedPreferences(PREFS, MODE_PRIVATE)
             .edit()
-            .putFloat(KEY_SCALE, MIN_SCALE)
+            .putBoolean(KEY_SCALE_ACTIVE, false)
             .apply()
         updateOverlay(MIN_SCALE, false)
     }
@@ -158,6 +203,18 @@ class ZoomAccessibilityService : AccessibilityService() {
         root.addView(overlayMinus, overlayButtonParams())
         overlayPlus = overlayButton("+", "放大", 0.05f)
         root.addView(overlayPlus, overlayButtonParams())
+        overlayDefault = TextView(this).apply {
+            setTextColor(0xFFB8D8FF.toInt())
+            textSize = 12f
+            text = "默认"
+            setPadding(dp(7), dp(5), dp(7), dp(5))
+            contentDescription = "恢复默认比例"
+            setOnClickListener { restoreDefaultZoom() }
+        }
+        root.addView(overlayDefault, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
         overlayStop = TextView(this).apply {
             setTextColor(0xFFFFD180.toInt())
             textSize = 12f
@@ -189,14 +246,47 @@ class ZoomAccessibilityService : AccessibilityService() {
     }
 
     private fun updateOverlay(scale: Float, active: Boolean) {
+        overlayActive = active
         overlayLabel?.text = if (active) {
             "缩放 %.2f×".format(java.util.Locale.US, scale)
         } else {
             "自定义缩放"
         }
-        overlayStop?.visibility = if (active) View.VISIBLE else View.INVISIBLE
-        overlayMinus?.visibility = if (active) View.VISIBLE else View.INVISIBLE
-        overlayPlus?.visibility = if (active) View.VISIBLE else View.INVISIBLE
+        setControlsVisible(active)
+        scheduleOverlayHide()
+    }
+
+    private fun setControlsVisible(visible: Boolean) {
+        val visibility = if (visible) View.VISIBLE else View.GONE
+        overlayStop?.visibility = visibility
+        overlayMinus?.visibility = visibility
+        overlayPlus?.visibility = visibility
+        overlayDefault?.visibility = visibility
+    }
+
+    private fun scheduleOverlayHide() {
+        cancelOverlayHide()
+        val task = Runnable {
+            removeOverlay()
+        }
+        overlayHideTask = task
+        overlayHandler.postDelayed(task, OVERLAY_HIDE_DELAY_MS)
+    }
+
+    private fun cancelOverlayHide() {
+        overlayHideTask?.let(overlayHandler::removeCallbacks)
+        overlayHideTask = null
+    }
+
+    private fun removeOverlay() {
+        cancelOverlayHide()
+        overlay?.let { view -> runCatching { windowManager?.removeView(view) } }
+        overlay = null
+        overlayLabel = null
+        overlayMinus = null
+        overlayPlus = null
+        overlayDefault = null
+        overlayStop = null
     }
 
     private fun overlayButton(label: String, description: String, delta: Float) = TextView(this).apply {
@@ -233,13 +323,10 @@ class ZoomAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        cancelOverlayHide()
+        overlayHandler.removeCallbacksAndMessages(null)
         resetScale()
-        overlay?.let { view -> runCatching { windowManager?.removeView(view) } }
-        overlay = null
-        overlayLabel = null
-        overlayMinus = null
-        overlayPlus = null
-        overlayStop = null
+        removeOverlay()
         windowManager = null
         magnification = null
         if (instance === this) instance = null

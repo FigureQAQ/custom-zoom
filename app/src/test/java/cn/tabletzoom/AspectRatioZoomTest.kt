@@ -11,6 +11,16 @@ class AspectRatioZoomTest {
     }
 
     @Test
+    fun requestedThreeByTwoDefaultIsOnePointOneSeven() {
+        assertEquals(1.17, AspectRatioZoom.defaultScale(3.0 / 2.0, 4.0 / 3.0), 0.000001)
+    }
+
+    @Test
+    fun otherDefaultsUseCoverScale() {
+        assertEquals(16.0 / 9.0 / 1.5, AspectRatioZoom.defaultScale(1.5, 16.0 / 9.0), 0.000001)
+    }
+
+    @Test
     fun widerTargetUsesSameCoverRule() {
         assertEquals(4.0 / 3.0, AspectRatioZoom.coverScale(4.0 / 3.0, 16.0 / 9.0), 0.000001)
     }

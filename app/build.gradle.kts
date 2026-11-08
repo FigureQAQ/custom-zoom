@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
     }
 
     compileOptions {
@@ -22,6 +22,15 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    buildTypes {
+        getByName("release") {
+            // GitHub sideload builds are installable; Play Store releases must
+            // be rebuilt with a privately controlled signing key.
+            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = false
+        }
     }
 }
 
